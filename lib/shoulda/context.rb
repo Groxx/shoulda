@@ -171,6 +171,62 @@ module Shoulda
       end
     end
 
+    # == Shared Contexts
+    #
+    # Just like context, but will only run own and parent setup blocks prior to the first test,
+    # and teardowns after the last.
+    # Also prevents sub-contexts from running setup/teardown blocks in or in parent of this context.
+    #
+    # === Example:
+    #
+    #  class CountingTest < Test::Unit::TestCase
+    #    @@setups_run = 0
+    #    @@shared_setups_run = 0
+    #
+    #    context "A shared variable" do
+    #      setup do
+    #        @@setups_run += 1
+    #      end
+    #
+    #      # note that order is not guaranteed
+    #
+    #      should "increment with a setup"
+    #        assert @@setups_run == 1 || @@setups_run == 2
+    #      end
+    #      should "increment with another setup"
+    #        assert @@setups_run == 1 || @@setups_run == 2
+    #      end
+    #
+    #      shared_context "within a shared context" do
+    #        setup do
+    #          @@setups_run += 1
+    #          @@shared_setups_run += 1
+    #        end
+    #
+    #        should "only increment once"
+    #          assert_equal 3, @@setups_run
+    #          assert_equal 1, @@shared_setups_run
+    #        end
+    #        should "only increment once, regardless of number of tests"
+    #          assert_equal 3, @@setups_run
+    #          assert_equal 1, @@shared_setups_run
+    #        end
+    #      end
+    #    end
+    #  end
+    #
+    # The above code will pass all tests, because shared_context's parent setup block will only be run
+    # once for all the containing should blocks. If there were a regular context within the
+    # shared_context, it would not trigger any of its parents' setup or teardown blocks.
+    def shared_context(name, &blk)
+      if Shoulda.current_context
+        Shoulda.current_context.context(name, nil, true, &blk)
+      else
+        context = Shoulda::Context.new(name, self, true, &blk)
+        context.build
+      end
+    end
+
     # Returns the class being tested, as determined by the test class name.
     #
     #   class UserTest; described_type; end
@@ -280,17 +336,21 @@ module Shoulda
     attr_accessor :shoulds            # array of hashes representing the should statements
     attr_accessor :should_eventuallys # array of hashes representing the should eventually statements
     attr_accessor :subject_block
+    attr_accessor :share_state        # if this context shares state among shoulds
+    attr_accessor :tests_run          # number of tests run, to reliably run teardown blocks when sharing state
 
-    def initialize(name, parent, &blk)
+    def initialize(name, parent, share_state=false, &blk)
       Shoulda.add_context(self)
-      self.name               = name
-      self.parent             = parent
-      self.setup_blocks       = []
-      self.teardown_blocks    = []
-      self.shoulds            = []
-      self.should_eventuallys = []
-      self.subcontexts        = []
-
+      self.name                   = name
+      self.parent                 = parent
+      self.setup_blocks           = []
+      self.teardown_blocks        = []
+      self.shoulds                = []
+      self.should_eventuallys     = []
+      self.subcontexts            = []
+      self.share_state            = share_state
+      self.tests_run = 0
+      
       merge_block(&blk)
       Shoulda.remove_context
     end
@@ -301,6 +361,10 @@ module Shoulda
 
     def context(name, &blk)
       self.subcontexts << Context.new(name, self, &blk)
+    end
+
+    def shared_context(name, &blk)
+      self.subcontexts << Context.new(name, self, true, &blk)
     end
 
     def setup(&blk)
@@ -345,7 +409,7 @@ module Shoulda
       am_subcontext? ? parent.test_unit_class : parent
     end
 
-    def create_test_from_should_hash(should)
+    def create_test_from_should_hash(should, num_of_shoulds)
       test_name = ["test:", full_name, "should", "#{should[:name]}. "].flatten.join(' ').to_sym
 
       if test_unit_class.instance_methods.include?(test_name.to_s)
@@ -355,13 +419,14 @@ module Shoulda
       context = self
       test_unit_class.send(:define_method, test_name) do
         @shoulda_context = context
+        context.tests_run+=1
         begin
-          context.run_parent_setup_blocks(self)
-          should[:before].bind(self).call if should[:before]
-          context.run_current_setup_blocks(self)
+          context.run_parent_setup_blocks(self)              if  !context.share_state || context.tests_run==1
+          should[:before].bind(self).call if should[:before] && (!context.share_state || context.tests_run==1)
+          context.run_current_setup_blocks(self)             if  !context.share_state || context.tests_run==1
           should[:block].bind(self).call
         ensure
-          context.run_all_teardown_blocks(self)
+          context.run_all_teardown_blocks(self)              if  !context.share_state || context.tests_run==num_of_shoulds
         end
       end
     end
@@ -372,7 +437,7 @@ module Shoulda
     end
 
     def run_parent_setup_blocks(binding)
-      self.parent.run_all_setup_blocks(binding) if am_subcontext?
+      self.parent.run_all_setup_blocks(binding) if am_subcontext? && !self.parent.share_state
     end
 
     def run_current_setup_blocks(binding)
@@ -385,7 +450,7 @@ module Shoulda
       teardown_blocks.reverse.each do |teardown_block|
         teardown_block.bind(binding).call
       end
-      self.parent.run_all_teardown_blocks(binding) if am_subcontext?
+      self.parent.run_all_teardown_blocks(binding) if am_subcontext? && !self.parent.share_state
     end
 
     def print_should_eventuallys
@@ -396,8 +461,9 @@ module Shoulda
     end
 
     def build
+      num_of_shoulds = shoulds.size
       shoulds.each do |should|
-        create_test_from_should_hash(should)
+        create_test_from_should_hash(should, num_of_shoulds)
       end
 
       subcontexts.each { |context| context.build }
