@@ -44,6 +44,48 @@ Produces the following test methods:
 
 So readable!
 
+Using shared_context lets you re-use those costly database-object-graphs!
+
+  class CountingTest < Test::Unit::TestCase
+    @@setups_run = 0
+    @@shared_setups_run = 0
+
+    context "A shared variable" do
+      setup do
+        @@setups_run += 1
+      end
+
+      # note that order is not guaranteed
+
+      should "increment with a setup"
+        assert @@setups_run == 1 || @@setups_run == 2
+      end
+      should "increment with another setup"
+        assert @@setups_run == 1 || @@setups_run == 2
+      end
+
+      shared_context "within a shared context" do
+        setup do
+          @@setups_run += 1
+          @@shared_setups_run += 1
+        end
+
+        should "only increment once"
+          assert_equal 3, @@setups_run
+          assert_equal 1, @@shared_setups_run
+        end
+        should "only increment once, regardless of number of tests"
+          assert_equal 3, @@setups_run
+          assert_equal 1, @@shared_setups_run
+        end
+      end
+    end
+  end
+
+Check it out, all those pass!  Now refactor those massive hundred-assertion
+should blocks that you've done because making the same objects a hundred
+times slows your tests to a crawl!  (we know you have them, everybody does!)
+
 === ActiveRecord Tests (Shoulda::ActiveRecord::Macros)
 
 Quick macro tests for your ActiveRecord associations and validations:
