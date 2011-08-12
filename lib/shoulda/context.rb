@@ -175,7 +175,6 @@ module Shoulda
     #
     # Just like context, but will only run own and parent setup blocks prior to the first test,
     # and teardowns after the last.
-    # Also prevents sub-contexts from running setup/teardown blocks in or in parent of this context.
     #
     # === Example:
     #
@@ -196,28 +195,13 @@ module Shoulda
     #      should "increment with another setup"
     #        assert @@setups_run == 1 || @@setups_run == 2
     #      end
-    #
-    #      shared_context "within a shared context" do
-    #        setup do
-    #          @@setups_run += 1
-    #          @@shared_setups_run += 1
-    #        end
-    #
-    #        should "only increment once"
-    #          assert_equal 3, @@setups_run
-    #          assert_equal 1, @@shared_setups_run
-    #        end
-    #        should "only increment once, regardless of number of tests"
-    #          assert_equal 3, @@setups_run
-    #          assert_equal 1, @@shared_setups_run
-    #        end
-    #      end
     #    end
     #  end
     #
     # The above code will pass all tests, because shared_context's parent setup block will only be run
-    # once for all the containing should blocks. If there were a regular context within the
-    # shared_context, it would not trigger any of its parents' setup or teardown blocks.
+    # once for all the containing should blocks. Sub-contexts are not allowed inside a shared_context,
+    # due to the ordering tests and contexts are executed in, and the difficulty in maintaining
+    # properly-isolated state for one context but not another.  Perhaps in time.
     def shared_context(name, &blk)
       if Shoulda.current_context
         Shoulda.current_context.context(name, nil, true, &blk)
@@ -338,6 +322,7 @@ module Shoulda
     attr_accessor :subject_block
     attr_accessor :share_state        # if this context shares state among shoulds
     attr_accessor :tests_run          # number of tests run, to reliably run teardown blocks when sharing state
+    attr_accessor :shared_binding     # binding data to share across shoulds when sharing state
 
     def initialize(name, parent, share_state=false, &blk)
       Shoulda.add_context(self)
@@ -360,10 +345,12 @@ module Shoulda
     end
 
     def context(name, &blk)
+      raise Exception.new("Cannot add sub-contexts to shared contexts") if self.share_state
       self.subcontexts << Context.new(name, self, &blk)
     end
 
     def shared_context(name, &blk)
+      raise Exception.new("Cannot add sub-contexts to shared contexts") if self.share_state
       self.subcontexts << Context.new(name, self, true, &blk)
     end
 
@@ -420,13 +407,22 @@ module Shoulda
       test_unit_class.send(:define_method, test_name) do
         @shoulda_context = context
         context.tests_run+=1
+        
+        # use the shared context
+        context.shared_binding ||= self
         begin
-          context.run_parent_setup_blocks(self)              if  !context.share_state || context.tests_run==1
-          should[:before].bind(self).call if should[:before] && (!context.share_state || context.tests_run==1)
-          context.run_current_setup_blocks(self)             if  !context.share_state || context.tests_run==1
-          should[:block].bind(self).call
+          if !context.share_state || context.tests_run==1
+            context.run_parent_setup_blocks(context.shared_binding)
+            should[:before].bind(context.shared_binding).call if should[:before]
+            context.run_current_setup_blocks(context.shared_binding)
+          end
+          should[:block].bind(context.shared_binding).call
         ensure
-          context.run_all_teardown_blocks(self)              if  !context.share_state || context.tests_run==num_of_shoulds
+          # clean the shared context if tearing down
+          if !context.share_state || context.tests_run==num_of_shoulds
+            context.run_all_teardown_blocks(context.shared_binding)
+            context.shared_binding = nil
+          end
         end
       end
     end
@@ -437,7 +433,7 @@ module Shoulda
     end
 
     def run_parent_setup_blocks(binding)
-      self.parent.run_all_setup_blocks(binding) if am_subcontext? && !self.parent.share_state
+      self.parent.run_all_setup_blocks(binding) if am_subcontext?
     end
 
     def run_current_setup_blocks(binding)
@@ -450,7 +446,7 @@ module Shoulda
       teardown_blocks.reverse.each do |teardown_block|
         teardown_block.bind(binding).call
       end
-      self.parent.run_all_teardown_blocks(binding) if am_subcontext? && !self.parent.share_state
+      self.parent.run_all_teardown_blocks(binding) if am_subcontext?
     end
 
     def print_should_eventuallys
