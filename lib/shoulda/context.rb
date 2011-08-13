@@ -200,8 +200,9 @@ module Shoulda
     #
     # The above code will pass all tests, because shared_context's parent setup block will only be run
     # once for all the containing should blocks. Sub-contexts are not allowed inside a shared_context,
-    # due to the ordering tests and contexts are executed in, and the difficulty in maintaining
-    # properly-isolated state for one context but not another.  Perhaps in time.
+    # due to the _completely_ un-controlled ordering tests and contexts are executed in, and the
+    # difficulty in maintaining properly-isolated state for one context but not another.  It may work
+    # most of the time, but a number of things could change that, so it is prevented.  Perhaps in time.
     def shared_context(name, &blk)
       if Shoulda.current_context
         Shoulda.current_context.context(name, nil, true, &blk)
@@ -334,7 +335,7 @@ module Shoulda
       self.should_eventuallys     = []
       self.subcontexts            = []
       self.share_state            = share_state
-      self.tests_run = 0
+      self.tests_run              = 0
       
       merge_block(&blk)
       Shoulda.remove_context
@@ -404,6 +405,7 @@ module Shoulda
       end
 
       context = self
+      original_use_transactional_fixtures = self.use_transactional_fixtures
       test_unit_class.send(:define_method, test_name) do
         @shoulda_context = context
         context.tests_run+=1
@@ -422,6 +424,13 @@ module Shoulda
           if !context.share_state || context.tests_run==num_of_shoulds
             context.run_all_teardown_blocks(context.shared_binding)
             context.shared_binding = nil
+            # restore transaction status
+            # if true originally, ActiveRecord will now roll back the database
+            context.use_transactional_fixtures = original_use_transactional_fixtures
+          else
+            # 'forget' we're running with implicit transactions
+            # this prevents ActiveRecord from rolling things back after a test
+            context.use_transactional_fixtures = false
           end
         end
       end
