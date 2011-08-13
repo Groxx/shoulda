@@ -203,6 +203,7 @@ module Shoulda
     # due to the _completely_ un-controlled ordering tests and contexts are executed in, and the
     # difficulty in maintaining properly-isolated state for one context but not another.  It may work
     # most of the time, but a number of things could change that, so it is prevented.  Perhaps in time.
+    #
     # WARNING: currently, if you have more than one test in the same named context, you might cause
     # tests to run out of 'conceptual' order, and interleave.
     # DO NOT REUSE SHARED_CONTEXT NAMES WITH ANY OTHER CONTEXTS.
